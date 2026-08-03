@@ -1,2 +1,7 @@
 venv/
 __pycache__/
+data/*.graphml
+cache/
+.DS_Store
+__pycache__/
+*.pyc
