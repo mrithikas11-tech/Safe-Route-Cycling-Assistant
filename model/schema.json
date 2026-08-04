@@ -1,0 +1,26 @@
+{
+  "columns": [
+    "length",
+    "lanes",
+    "maxspeed",
+    "oneway",
+    "turn_angles",
+    "highway_busway",
+    "highway_living_street",
+    "highway_motorway",
+    "highway_motorway_link",
+    "highway_primary",
+    "highway_primary_link",
+    "highway_residential",
+    "highway_secondary",
+    "highway_secondary_link",
+    "highway_tertiary",
+    "highway_tertiary_link",
+    "highway_trunk",
+    "highway_trunk_link",
+    "highway_unclassified"
+  ],
+  "threshold": 0.5,
+  "model_name": "XGBoost",
+  "roc_auc": 0.8169635286516161
+}
