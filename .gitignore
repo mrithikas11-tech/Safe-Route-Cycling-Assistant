@@ -1,7 +1,6 @@
-venv/
-__pycache__/
-data/*.graphml
+.venv/
 cache/
-.DS_Store
+data/*.graphml
 __pycache__/
 *.pyc
+.DS_Store
