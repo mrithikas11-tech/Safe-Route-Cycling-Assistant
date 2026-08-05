@@ -150,6 +150,164 @@ def evaluate_route(
     }
 
 
+def rank_and_explain(
+    routes_dict: Dict[str, Any],
+    G: nx.Graph,
+    high_risk_threshold: float = 0.5,
+) -> Dict[str, Any]:
+    """
+    Evaluates candidate routes, selects the recommended route (safest),
+    compares it with the shortest and alternative routes, and generates
+    human-readable reasoning.
+
+    Output format:
+    {
+        "recommended_route": List[node_ids] or None,
+        "recommended_tag": "safest" | "shortest" | "none",
+        "reasoning": str,
+        "metrics": {
+            "safest": eval_dict,
+            "shortest": eval_dict,
+            "alternatives": [eval_dict1, ...]
+        },
+        "ranked_routes": [
+            {
+                "name": str,
+                "tag": str,
+                "route": List[node_ids],
+                "metrics": eval_dict
+            },
+            ...
+        ],
+        "error": str or None
+    }
+    """
+    error = routes_dict.get("error") if isinstance(routes_dict, dict) else "Invalid routes object"
+    safest_route = routes_dict.get("safest") if isinstance(routes_dict, dict) else None
+    shortest_route = routes_dict.get("shortest") if isinstance(routes_dict, dict) else None
+    alternatives = routes_dict.get("alternatives", []) if isinstance(routes_dict, dict) else []
+
+    if error or not safest_route:
+        err_msg = error or "No valid route available to rank."
+        return {
+            "recommended_route": None,
+            "recommended_tag": "none",
+            "reasoning": f"Cannot rank routes: {err_msg}",
+            "metrics": {
+                "safest": None,
+                "shortest": None,
+                "alternatives": [],
+            },
+            "ranked_routes": [],
+            "error": err_msg,
+        }
+
+    safest_eval = evaluate_route(G, safest_route, high_risk_threshold)
+    shortest_eval = (
+        evaluate_route(G, shortest_route, high_risk_threshold)
+        if shortest_route
+        else safest_eval
+    )
+
+    alt_evals = [
+        evaluate_route(G, alt_r, high_risk_threshold) for alt_r in alternatives if alt_r
+    ]
+
+    # Reasoning logic comparing safest vs shortest
+    if shortest_route is None or safest_route == shortest_route:
+        data_pct = int(safest_eval["data_fraction"] * 100)
+        reasoning = (
+            f"The recommended route ({safest_eval['total_length_km']} km) is already "
+            f"the shortest path available and has a low collision risk profile. "
+            f"{data_pct}% based on confirmed crash data."
+        )
+    else:
+        len_diff = safest_eval["total_length"] - shortest_eval["total_length"]
+        len_pct = (
+            (len_diff / shortest_eval["total_length"]) * 100
+            if shortest_eval["total_length"] > 0
+            else 0.0
+        )
+
+        risk_diff = shortest_eval["avg_risk"] - safest_eval["avg_risk"]
+        risk_pct = (
+            (risk_diff / shortest_eval["avg_risk"]) * 100
+            if shortest_eval["avg_risk"] > 0
+            else 0.0
+        )
+
+        avoided_segments = (
+            shortest_eval["high_risk_segments"] - safest_eval["high_risk_segments"]
+        )
+        data_pct = int(safest_eval["data_fraction"] * 100)
+
+        parts = []
+        if len_pct > 0:
+            parts.append(f"{round(len_pct, 1)}% longer (+{int(len_diff)}m)")
+
+        if avoided_segments > 0:
+            parts.append(
+                f"avoids {avoided_segments} high-risk segment{'s' if avoided_segments > 1 else ''}"
+            )
+
+        if risk_pct > 0:
+            parts.append(f"reduces average collision risk by {round(risk_pct, 1)}%")
+
+        if parts:
+            reason_details = ", ".join(parts)
+            reasoning = (
+                f"Recommended route is {reason_details}. "
+                f"{data_pct}% based on confirmed crash data."
+            )
+        else:
+            reasoning = (
+                f"Recommended route prioritizes lower collision probability segments "
+                f"across {safest_eval['total_length_km']} km ({data_pct}% based on confirmed crash data)."
+            )
+
+    ranked_routes = [
+        {
+            "name": "Recommended (Safest Route)",
+            "tag": "safest",
+            "route": safest_route,
+            "metrics": safest_eval,
+        }
+    ]
+
+    if shortest_route and shortest_route != safest_route:
+        ranked_routes.append(
+            {
+                "name": "Shortest Direct Route",
+                "tag": "shortest",
+                "route": shortest_route,
+                "metrics": shortest_eval,
+            }
+        )
+
+    for idx, (alt_r, alt_ev) in enumerate(zip(alternatives, alt_evals), start=1):
+        ranked_routes.append(
+            {
+                "name": f"Alternative Option {idx}",
+                "tag": f"alternative_{idx}",
+                "route": alt_r,
+                "metrics": alt_ev,
+            }
+        )
+
+    return {
+        "recommended_route": safest_route,
+        "recommended_tag": "safest",
+        "reasoning": reasoning,
+        "metrics": {
+            "safest": safest_eval,
+            "shortest": shortest_eval,
+            "alternatives": alt_evals,
+        },
+        "ranked_routes": ranked_routes,
+        "error": None,
+    }
+
+
 if __name__ == "__main__":
     # Test metric helper functions with a synthetic NetworkX graph
     print("Testing metric functions...")
@@ -158,14 +316,22 @@ if __name__ == "__main__":
     test_G.add_node(1, y=37.35, x=-121.95)
     test_G.add_node(2, y=37.36, x=-121.94)
     test_G.add_node(3, y=37.37, x=-121.93)
+    test_G.add_node(4, y=37.365, x=-121.945)
 
+    # Route 1 (shortest, high risk)
     test_G.add_edge(1, 2, length=1000.0, collision_prob=0.1, source="data", label=0)
-    test_G.add_edge(2, 3, length=2000.0, collision_prob=0.7, source="model", label=1)
+    test_G.add_edge(2, 3, length=2000.0, collision_prob=0.8, source="model", label=1)
 
-    route = [1, 2, 3]
-    eval_result = evaluate_route(test_G, route)
+    # Route 2 (detour safest, lower risk)
+    test_G.add_edge(1, 4, length=1800.0, collision_prob=0.1, source="data", label=0)
+    test_G.add_edge(4, 3, length=1500.0, collision_prob=0.15, source="data", label=0)
 
-    print("Evaluation Result:")
+    route_shortest = [1, 2, 3]
+    route_safest = [1, 4, 3]
+
+    eval_result = evaluate_route(test_G, route_shortest)
+
+    print("Evaluation Result (Shortest):")
     for k, v in eval_result.items():
         if k != "edge_list":
             print(f"  {k}: {v}")
@@ -174,6 +340,26 @@ if __name__ == "__main__":
     assert eval_result["high_risk_segments"] == 1
     assert eval_result["data_count"] == 1
     assert eval_result["model_count"] == 1
-    assert round(eval_result["avg_risk"], 4) == round((1000 * 0.1 + 2000 * 0.7) / 3000, 4)
+    assert round(eval_result["avg_risk"], 4) == round((1000 * 0.1 + 2000 * 0.8) / 3000, 4)
 
-    print("Tests passed successfully!")
+    print("\nTesting rank_and_explain...")
+    dummy_routes_dict = {
+        "safest": route_safest,
+        "shortest": route_shortest,
+        "alternatives": [],
+        "alpha": 5.0,
+        "error": None,
+    }
+
+    ranking_output = rank_and_explain(dummy_routes_dict, test_G)
+    print("Reasoning Output:")
+    print(f"  {ranking_output['reasoning']}")
+    print(f"  Recommended Tag: {ranking_output['recommended_tag']}")
+    print(f"  Ranked Routes Count: {len(ranking_output['ranked_routes'])}")
+
+    assert ranking_output["recommended_route"] == route_safest
+    assert "longer" in ranking_output["reasoning"]
+    assert "avoids 1 high-risk segment" in ranking_output["reasoning"]
+
+    print("Step 2 tests passed successfully!")
+
