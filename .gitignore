@@ -4,3 +4,4 @@ data/*.graphml
 __pycache__/
 *.pyc
 .DS_Store
+Notes/
