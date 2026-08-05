@@ -7,6 +7,7 @@ Judging the routes, explaining the pick, and drawing the map.
 
 from typing import Dict, List, Any, Optional, Tuple
 import networkx as nx
+import folium
 
 
 def _safe_float(val: Any, default: float = 0.0) -> float:
@@ -308,6 +309,158 @@ def rank_and_explain(
     }
 
 
+def _node_latlon(G: nx.Graph, node_id: Any) -> Tuple[float, float]:
+    """Return (lat, lon) for a graph node."""
+    node_data = G.nodes[node_id]
+    return float(node_data["y"]), float(node_data["x"])
+
+
+def _extract_edge_coords(G: nx.Graph, u: Any, v: Any) -> List[Tuple[float, float]]:
+    """
+    Extract (lat, lon) coordinates for the edge connecting u and v.
+    Flips OSMnx geometry (lon, lat) to Folium (lat, lon).
+    """
+    edge_data = get_edge_data(G, u, v)
+    geom = edge_data.get("geometry")
+
+    if geom is not None and hasattr(geom, "coords"):
+        # Shapely geometry stores (x=lon, y=lat); flip to (lat, lon)
+        return [(float(lat), float(lon)) for lon, lat in geom.coords]
+
+    # Fallback to straight line between nodes
+    return [_node_latlon(G, u), _node_latlon(G, v)]
+
+
+def build_map(
+    G: nx.Graph,
+    routes_dict: Dict[str, Any],
+    ranking_result: Optional[Dict[str, Any]] = None,
+    zoom_start: int = 13,
+) -> folium.Map:
+    """
+    Build an interactive Folium Map visualizing the routes.
+    Optimized to only render edges contained in candidate routes.
+    """
+    if not isinstance(routes_dict, dict):
+        routes_dict = {}
+
+    safest_route = routes_dict.get("safest")
+    shortest_route = routes_dict.get("shortest")
+    alternatives = routes_dict.get("alternatives", []) or []
+
+    all_routes = []
+    if safest_route:
+        all_routes.append(("safest", safest_route))
+    if shortest_route and shortest_route != safest_route:
+        all_routes.append(("shortest", shortest_route))
+    for idx, alt_r in enumerate(alternatives, start=1):
+        if alt_r:
+            all_routes.append((f"alternative_{idx}", alt_r))
+
+    # Determine center location
+    all_lats = []
+    all_lons = []
+    for _, route in all_routes:
+        for node in route:
+            if node in G.nodes:
+                lat, lon = _node_latlon(G, node)
+                all_lats.append(lat)
+                all_lons.append(lon)
+
+    if all_lats and all_lons:
+        center_lat = sum(all_lats) / len(all_lats)
+        center_lon = sum(all_lons) / len(all_lons)
+    else:
+        # Default fallback to Santa Clara County center
+        center_lat, center_lon = 37.3541, -121.9552
+
+    m = folium.Map(
+        location=[center_lat, center_lon],
+        zoom_start=zoom_start,
+        tiles="cartodbpositron",
+    )
+
+    if not all_routes:
+        return m
+
+    # 1. Draw Alternatives first (bottom layer)
+    for tag, route in all_routes:
+        if tag.startswith("alternative_"):
+            for i in range(len(route) - 1):
+                u, v = route[i], route[i + 1]
+                coords = _extract_edge_coords(G, u, v)
+                edge_info = get_edge_data(G, u, v)
+                prob = _safe_float(edge_info.get("collision_prob", 0.0))
+                folium.PolyLine(
+                    locations=coords,
+                    color="#757575",
+                    weight=3,
+                    opacity=0.6,
+                    dash_array="4, 8",
+                    tooltip=f"Alternative Route | Risk: {round(prob * 100, 1)}%",
+                ).add_to(m)
+
+    # 2. Draw Shortest Route (middle layer, if distinct)
+    for tag, route in all_routes:
+        if tag == "shortest":
+            for i in range(len(route) - 1):
+                u, v = route[i], route[i + 1]
+                coords = _extract_edge_coords(G, u, v)
+                edge_info = get_edge_data(G, u, v)
+                prob = _safe_float(edge_info.get("collision_prob", 0.0))
+                folium.PolyLine(
+                    locations=coords,
+                    color="#E53935",
+                    weight=4,
+                    opacity=0.7,
+                    dash_array="6, 6",
+                    tooltip=f"Shortest Route (Direct) | Risk: {round(prob * 100, 1)}%",
+                ).add_to(m)
+
+    # 3. Draw Recommended Safest Route (top layer)
+    for tag, route in all_routes:
+        if tag == "safest":
+            for i in range(len(route) - 1):
+                u, v = route[i], route[i + 1]
+                coords = _extract_edge_coords(G, u, v)
+                edge_info = get_edge_data(G, u, v)
+                prob = _safe_float(edge_info.get("collision_prob", 0.0))
+                src = str(edge_info.get("source", "model"))
+                length = _safe_float(edge_info.get("length", 0.0))
+
+                # Color code segment by risk: green if low risk (<0.5), red if high risk (>=0.5)
+                seg_color = "#2E7D32" if prob < 0.5 else "#D32F2F"
+                folium.PolyLine(
+                    locations=coords,
+                    color=seg_color,
+                    weight=6,
+                    opacity=0.9,
+                    tooltip=f"Recommended Safest Route | Seg Risk: {round(prob * 100, 1)}% ({src}) | {int(length)}m",
+                ).add_to(m)
+
+    # Add Start and Destination Markers using safest_route or first available route
+    primary_route = safest_route or (all_routes[0][1] if all_routes else None)
+    if primary_route and len(primary_route) >= 2:
+        start_latlon = _node_latlon(G, primary_route[0])
+        end_latlon = _node_latlon(G, primary_route[-1])
+
+        folium.Marker(
+            location=start_latlon,
+            popup="Start Location",
+            tooltip="Start",
+            icon=folium.Icon(color="green", icon="play", prefix="fa"),
+        ).add_to(m)
+
+        folium.Marker(
+            location=end_latlon,
+            popup="Destination",
+            tooltip="Destination",
+            icon=folium.Icon(color="red", icon="flag", prefix="fa"),
+        ).add_to(m)
+
+    return m
+
+
 if __name__ == "__main__":
     # Test metric helper functions with a synthetic NetworkX graph
     print("Testing metric functions...")
@@ -361,5 +514,30 @@ if __name__ == "__main__":
     assert "longer" in ranking_output["reasoning"]
     assert "avoids 1 high-risk segment" in ranking_output["reasoning"]
 
-    print("Step 2 tests passed successfully!")
+    print("\nTesting build_map...")
+    folium_map = build_map(test_G, dummy_routes_dict, ranking_output)
+    assert isinstance(folium_map, folium.Map)
+    print(f"  Map generated successfully (Type: {type(folium_map).__name__})")
+
+    # Real graph integration test if scored_graph.graphml exists
+    from pathlib import Path
+    graph_file = Path("data/scored_graph.graphml")
+    if graph_file.exists():
+        print("\nTesting with real data/scored_graph.graphml...")
+        try:
+            from src.routing import get_routes, load_scored_graph
+        except ModuleNotFoundError:
+            from routing import get_routes, load_scored_graph
+        real_G = load_scored_graph()
+        nodes = list(real_G.nodes)
+        if len(nodes) > 500:
+            start_n, end_n = nodes[10], nodes[400]
+            real_routes = get_routes(start_n, end_n, G=real_G, alpha=5.0)
+            real_ranking = rank_and_explain(real_routes, real_G)
+            real_map = build_map(real_G, real_routes, real_ranking)
+            print("  Real Route Reasoning:", real_ranking["reasoning"])
+            print("  Real Map Object Created:", isinstance(real_map, folium.Map))
+
+    print("\nStep 3 tests passed successfully!")
+
 
