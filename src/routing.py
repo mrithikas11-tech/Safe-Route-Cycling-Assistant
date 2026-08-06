@@ -64,7 +64,6 @@ def add_safe_costs(G, alpha=ALPHA):
             "invalid collision probabilities."
         )
 
-
 def get_shortest_route(G, start, end):
     """
     Return the route with the smallest total road length.

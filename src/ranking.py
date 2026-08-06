@@ -217,10 +217,10 @@ def rank_and_explain(
     # Reasoning logic comparing safest vs shortest
     if shortest_route is None or safest_route == shortest_route:
         data_pct = int(safest_eval["data_fraction"] * 100)
+        total_length_mi = round(safest_eval['total_length_km'] * 0.621371, 2)
         reasoning = (
-            f"The recommended route ({safest_eval['total_length_km']} km) is already "
+            f"The recommended route ({total_length_miles} mi) is already "
             f"the shortest path available and has a low collision risk profile. "
-            f"{data_pct}% based on confirmed crash data."
         )
     else:
         len_diff = safest_eval["total_length"] - shortest_eval["total_length"]
@@ -244,7 +244,8 @@ def rank_and_explain(
 
         parts = []
         if len_pct > 0:
-            parts.append(f"{round(len_pct, 1)}% longer (+{int(len_diff)}m)")
+            len_diff_feet = int(len_diff * 3.28084)
+            parts.append(f"{round(len_pct, 1)}% longer (+{int(len_diff_feet)} ft)")
 
         if avoided_segments > 0:
             parts.append(
@@ -261,9 +262,11 @@ def rank_and_explain(
                 f"{data_pct}% based on confirmed crash data."
             )
         else:
+            total_length_mi = round(safest_eval['total_length_km'] * 0.621371, 2)
             reasoning = (
-                f"Recommended route prioritizes lower collision probability segments "
-                f"across {safest_eval['total_length_km']} km ({data_pct}% based on confirmed crash data)."
+                f"Recommended route prioritizes lower collision probability segments "     
+
+                f"across {total_length_mi} mi ({data_pct}% based on confirmed crash data)."
             )
 
     ranked_routes = [
